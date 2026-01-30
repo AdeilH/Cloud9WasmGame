@@ -1,6 +1,7 @@
 // mod App;
 
 use bevy::prelude::*;
+use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageLoaderSettings};
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 enum GameState {
@@ -63,6 +64,24 @@ enum MenuButton {
 #[derive(Resource)]
 struct EnemySpawnTimer(Timer);
 
+#[derive(Resource)]
+struct Progress {
+    min_x: f32,
+    wall_x: f32,
+}
+
+#[derive(Resource, Default)]
+struct HoverPosition(Vec3);
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            min_x: 0.0,
+            wall_x: 20.0,
+        }
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -75,6 +94,8 @@ fn main() {
         .init_state::<GameState>()
         .insert_resource(PlayerChoice { character_path: "Models/GLB format/character-a.glb".to_string() })
         .insert_resource(EnemySpawnTimer(Timer::from_seconds(5.0, TimerMode::Repeating)))
+        .init_resource::<Progress>()
+        .init_resource::<HoverPosition>()
         .add_systems(OnEnter(GameState::Menu), setup_menu)
         .add_systems(Update, menu_interaction.run_if(in_state(GameState::Menu).or(in_state(GameState::GameOver))))
         .add_systems(OnExit(GameState::Menu), cleanup_menu)
@@ -255,7 +276,11 @@ fn setup_game(
     commands.spawn((
         Player,
         Health { current: 200.0, max: 200.0 },
-        AttackTimer(Timer::from_seconds(0.5, TimerMode::Repeating)),
+        AttackTimer({
+            let mut t = Timer::from_seconds(0.5, TimerMode::Once);
+            t.set_elapsed(std::time::Duration::from_secs_f32(0.5));
+            t
+        }),
         TargetPosition(Vec3::ZERO),
         SceneRoot(asset_server.load(format!("{}#Scene0", player_choice.character_path))),
         Transform::from_xyz(0.0, 0.0, 0.0),
@@ -286,24 +311,32 @@ fn setup_game(
     });
 
     // Ground plane
+    let mut grass_mesh = Plane3d::default().mesh().size(2000.0, 2000.0).build();
+    if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(ref mut uvs)) = grass_mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
+        for uv in uvs {
+            uv[0] *= 200.0;
+            uv[1] *= 200.0;
+        }
+    }
+
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
+        Mesh3d(meshes.add(grass_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.05, 0.15, 0.05),
+            base_color: Color::srgb(0.2, 0.4, 0.2),
+            base_color_texture: Some(asset_server.load_with_settings(
+                "PNG/Default/background_terrain_top.png",
+                |s: &mut ImageLoaderSettings| {
+                    s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                        address_mode_u: ImageAddressMode::Repeat,
+                        address_mode_v: ImageAddressMode::Repeat,
+                        ..default()
+                    });
+                }
+            )),
+            perceptual_roughness: 0.9,
             ..default()
         })),
     ));
-
-    // Road lane
-    let road_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset("Models/GLB format/road-straight.glb"));
-    for i in -100..100 {
-        commands.spawn((
-            Prop,
-            SceneRoot(road_handle.clone()),
-            Transform::from_xyz(i as f32 * 10.0, 0.01, 0.0)
-                .with_scale(Vec3::splat(5.0)),
-        ));
-    }
 
     // Click Indicator (Small dot)
     commands.spawn((
@@ -401,53 +434,61 @@ fn spawn_enemies(
     mut timer: ResMut<EnemySpawnTimer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    player_query: Query<&Transform, With<Player>>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        
-        let enemy_models = [
-            "Models/GLB format/character-p.glb",
-            "Models/GLB format/character-q.glb",
-            "Models/GLB format/character-n.glb",
-            "Models/GLB format/character-m.glb",
-        ];
-        let model_path = enemy_models[rng.gen_range(0..enemy_models.len())];
+        if let Ok(player_transform) = player_query.get_single() {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            
+            let enemy_models = [
+                "Models/GLB format/character-p.glb",
+                "Models/GLB format/character-q.glb",
+                "Models/GLB format/character-n.glb",
+                "Models/GLB format/character-m.glb",
+            ];
+            let model_path = enemy_models[rng.gen_range(0..enemy_models.len())];
 
-        let spawn_x = 350.0; // Spawn at the other end for looping feel
-        let spawn_z = (time.elapsed_secs().sin() * 5.0) + rng.gen_range(-3.0..3.0);
-        
-        commands.spawn((
-            Enemy,
-            Health { current: 100.0, max: 100.0 },
-            AttackTimer(Timer::from_seconds(2.0, TimerMode::Repeating)),
-            SceneRoot(asset_server.load(format!("{}#Scene0", model_path))),
-            Transform::from_xyz(spawn_x, 0.0, spawn_z),
-        )).with_children(|parent| {
-            // Health bar background
-            parent.spawn((
-                Mesh3d(meshes.add(Plane3d::default().mesh().size(2.0, 0.2))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.2, 0.0, 0.0),
-                    unlit: true,
-                    ..default()
-                })),
-                Transform::from_xyz(0.0, 3.5, 0.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-            ));
-            // Health bar foreground
-            parent.spawn((
-                HealthBar,
-                Mesh3d(meshes.add(Plane3d::default().mesh().size(1.0, 1.0))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.0, 0.0), // Red for enemies
-                    unlit: true,
-                    ..default()
-                })),
-                Transform::from_xyz(0.0, 3.51, 0.0)
-                    .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-                    .with_scale(Vec3::new(2.0, 1.0, 0.2)),
-            ));
-        });
+            // Spawn ahead of player
+            let spawn_x = player_transform.translation.x - 60.0;
+            let spawn_z = (time.elapsed_secs().sin() * 5.0) + rng.gen_range(-3.0..3.0);
+            
+            commands.spawn((
+                Enemy,
+                Health { current: 100.0, max: 100.0 },
+                AttackTimer({
+                    let mut t = Timer::from_seconds(2.0, TimerMode::Once);
+                    t.set_elapsed(std::time::Duration::from_secs_f32(2.0));
+                    t
+                }),
+                SceneRoot(asset_server.load(format!("{}#Scene0", model_path))),
+                Transform::from_xyz(spawn_x, 0.0, spawn_z),
+            )).with_children(|parent| {
+                // Health bar background
+                parent.spawn((
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(2.0, 0.2))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.2, 0.0, 0.0),
+                        unlit: true,
+                        ..default()
+                    })),
+                    Transform::from_xyz(0.0, 3.5, 0.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+                // Health bar foreground
+                parent.spawn((
+                    HealthBar,
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(1.0, 1.0))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(1.0, 0.0, 0.0), // Red for enemies
+                        unlit: true,
+                        ..default()
+                    })),
+                    Transform::from_xyz(0.0, 3.51, 0.0)
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(2.0, 1.0, 0.2)),
+                ));
+            });
+        }
     }
 }
 
@@ -482,6 +523,7 @@ fn combat_system(
     mut enemy_query: Query<(&Transform, &mut AttackTimer), (With<Enemy>, Without<Player>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    hover_pos: Res<HoverPosition>,
 ) {
     let projectile_mesh = meshes.add(Cuboid::new(0.1, 0.1, 1.5).mesh());
     let player_projectile_mat = materials.add(StandardMaterial {
@@ -498,37 +540,37 @@ fn combat_system(
     if let Ok((player_transform, mut player_timer)) = player_query.get_single_mut() {
         player_timer.0.tick(time.delta());
         
-        if keys.pressed(KeyCode::Space) && player_timer.0.just_finished() {
-            let mut closest_enemy = None;
-            let mut min_dist = 40.0;
-            for (enemy_transform, _) in &enemy_query {
-                let dist = player_transform.translation.distance(enemy_transform.translation);
-                if dist < min_dist {
-                    min_dist = dist;
-                    closest_enemy = Some(enemy_transform.translation);
-                }
-            }
+        if keys.pressed(KeyCode::Space) && player_timer.0.finished() {
+            let mut shoot_dir = hover_pos.0 - player_transform.translation;
+            shoot_dir.y = 0.0;
+            let dir = shoot_dir.normalize_or_zero();
+            
+            let dir = if dir == Vec3::ZERO {
+                // Default shoot forward (same as player orientation)
+                Vec3::new(-1.0, 0.0, -1.0).normalize()
+            } else {
+                dir
+            };
 
-            if let Some(target_pos) = closest_enemy {
-                let dir = (target_pos - player_transform.translation).normalize();
-                commands.spawn((
-                    Projectile {
-                        velocity: dir * 25.0,
-                        damage: 25.0,
-                        is_player: true,
-                    },
-                    Mesh3d(projectile_mesh.clone()),
-                    MeshMaterial3d(player_projectile_mat.clone()),
-                    Transform::from_translation(player_transform.translation + Vec3::Y * 1.5)
-                        .looking_to(dir, Vec3::Y),
-                ));
-            }
+            commands.spawn((
+                Projectile {
+                    velocity: dir * 25.0,
+                    damage: 25.0,
+                    is_player: true,
+                },
+                Mesh3d(projectile_mesh.clone()),
+                MeshMaterial3d(player_projectile_mat.clone()),
+                Transform::from_translation(player_transform.translation + Vec3::Y * 1.5)
+                    .looking_to(dir, Vec3::Y),
+            ));
+            
+            player_timer.0.reset();
         }
     }
 
     for (enemy_transform, mut enemy_timer) in &mut enemy_query {
         enemy_timer.0.tick(time.delta());
-        if enemy_timer.0.just_finished() {
+        if enemy_timer.0.finished() {
             if let Ok((player_transform, _)) = player_query.get_single() {
                 let dist = enemy_transform.translation.distance(player_transform.translation);
                 if dist < 35.0 {
@@ -544,6 +586,7 @@ fn combat_system(
                         Transform::from_translation(enemy_transform.translation + Vec3::Y * 1.5)
                             .looking_to(dir, Vec3::Y),
                     ));
+                    enemy_timer.0.reset();
                 }
             }
         }
@@ -553,12 +596,18 @@ fn combat_system(
 fn move_camera(
     player_query: Query<&Transform, With<Player>>,
     mut camera_query: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
+    progress: Res<Progress>,
 ) {
     if let Ok(player_transform) = player_query.get_single() {
         if let Ok(mut camera_transform) = camera_query.get_single_mut() {
             let offset = Vec3::new(20.0, 20.0, 20.0);
-            camera_transform.translation = player_transform.translation + offset;
-            camera_transform.look_at(player_transform.translation, Vec3::Y);
+            // Camera X follows progress.min_x (forward progress)
+            // Camera Z and Y follow current player position to stay centered
+            camera_transform.translation.x = progress.min_x + offset.x;
+            camera_transform.translation.y = player_transform.translation.y + offset.y;
+            camera_transform.translation.z = player_transform.translation.z + offset.z;
+            
+            camera_transform.look_at(Vec3::new(progress.min_x, player_transform.translation.y, player_transform.translation.z), Vec3::Y);
         }
     }
 }
@@ -678,6 +727,7 @@ fn loop_environment(
     mut target_query: Query<&mut TargetPosition, With<Player>>,
     mut props_query: Query<&mut Transform, (With<Prop>, Without<Player>)>,
     enemy_query: Query<Entity, With<Enemy>>,
+    mut progress: ResMut<Progress>,
 ) {
     let mut teleport_offset = 0.0;
     for mut transform in &mut player_query {
@@ -687,6 +737,8 @@ fn loop_environment(
             if let Ok(mut target) = target_query.get_single_mut() {
                 target.0.x += teleport_offset;
             }
+            progress.min_x = transform.translation.x;
+            progress.wall_x = progress.min_x + 30.0;
         }
     }
 
@@ -712,6 +764,8 @@ fn handle_input(
     camera_query: Query<(&Camera, &GlobalTransform)>,
     mut player_query: Query<&mut TargetPosition, With<Player>>,
     mut indicator_query: Query<&mut Transform, (With<ClickIndicator>, Without<Player>)>,
+    progress: Res<Progress>,
+    mut hover_pos: ResMut<HoverPosition>,
 ) {
     let window = window_query.single();
     if let Ok((camera, camera_transform)) = camera_query.get_single() {
@@ -719,8 +773,16 @@ fn handle_input(
             if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
                 let t = -ray.origin.y / ray.direction.y;
                 if t > 0.0 {
-                    let ground_pos = ray.origin + ray.direction * t;
+                    let mut ground_pos = ray.origin + ray.direction * t;
                     
+                    // Constrain X to be within the wall
+                    if ground_pos.x > progress.wall_x {
+                        ground_pos.x = progress.wall_x;
+                    }
+
+                    // Update hover position resource
+                    hover_pos.0 = ground_pos;
+
                     // Always update indicator to hover position
                     for mut indicator_transform in indicator_query.iter_mut() {
                         indicator_transform.translation = ground_pos + Vec3::Y * 0.1;
@@ -741,6 +803,7 @@ fn handle_input(
 fn move_player(
     time: Res<Time>,
     mut query: Query<(&mut Transform, &TargetPosition), With<Player>>,
+    mut progress: ResMut<Progress>,
 ) {
     for (mut transform, target) in query.iter_mut() {
         let direction = target.0 - transform.translation;
@@ -755,6 +818,17 @@ fn move_player(
             } else {
                 transform.translation += move_delta;
             }
+        }
+
+        // Block from moving downwards (backwards)
+        if transform.translation.x > progress.wall_x {
+            transform.translation.x = progress.wall_x;
+        }
+
+        // Update progress and move wall forward
+        if transform.translation.x < progress.min_x {
+            progress.min_x = transform.translation.x;
+            progress.wall_x = progress.min_x + 15.0; // The "old platform" is left behind
         }
 
         let back_to_camera_dir = Vec3::new(-1.0, 0.0, -1.0).normalize();
