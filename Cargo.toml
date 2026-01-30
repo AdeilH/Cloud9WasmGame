@@ -1,0 +1,9 @@
+[package]
+name = "league-wasm-game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+rand = "0.8"
