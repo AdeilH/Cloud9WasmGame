@@ -95,7 +95,10 @@ pub struct Progress {
 }
 
 #[derive(Resource, Default)]
-pub struct HoverPosition(pub Vec3);
+pub struct HoverPosition {
+    pub cursor: Option<Vec2>,
+    pub world: Vec3,
+}
 
 impl Default for Progress {
     fn default() -> Self {
@@ -126,6 +129,8 @@ impl Plugin for GamePlugin {
                 handle_input,
                 move_player,
                 move_camera,
+                update_hover_position,
+                player_aiming,
                 spawn_enemies,
                 move_enemies,
                 combat_system,
@@ -396,9 +401,9 @@ fn setup_game(
     commands.spawn((
         Mesh3d(meshes.add(grass_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.4, 0.2),
+            base_color: Color::srgb(0.5, 0.7, 0.5),
             base_color_texture: Some(asset_server.load_with_settings(
-                "PNG/Default/background_terrain_top.png",
+                "PNG/Default/terrain_sand_top_a.png",
                 |s: &mut ImageLoaderSettings| {
                     s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                         address_mode_u: ImageAddressMode::Repeat,
@@ -407,7 +412,8 @@ fn setup_game(
                     });
                 }
             )),
-            perceptual_roughness: 0.9,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         })),
     ));
@@ -625,7 +631,7 @@ fn combat_system(
         player_timer.0.tick(time.delta());
         
         if (keys.pressed(KeyCode::Space) || mouse_button_input.pressed(MouseButton::Left)) && player_timer.0.finished() {
-            let mut shoot_dir = hover_pos.0 - player_transform.translation;
+            let mut shoot_dir = hover_pos.world - player_transform.translation;
             shoot_dir.y = 0.0;
             let dir = shoot_dir.normalize_or_zero();
             
@@ -692,6 +698,52 @@ fn move_camera(
             camera_transform.translation.z = player_transform.translation.z + offset.z;
             
             camera_transform.look_at(Vec3::new(progress.min_x, player_transform.translation.y, player_transform.translation.z), Vec3::Y);
+        }
+    }
+}
+
+fn update_hover_position(
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    mut hover_pos: ResMut<HoverPosition>,
+    progress: Res<Progress>,
+    mut indicator_query: Query<&mut Transform, With<ClickIndicator>>,
+) {
+    if let Some(cursor) = hover_pos.cursor {
+        if let Ok((camera, camera_transform)) = camera_query.get_single() {
+            if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) {
+                let t = -ray.origin.y / ray.direction.y;
+                if t > 0.0 {
+                    let mut ground_pos = ray.origin + ray.direction * t;
+                    
+                    // Constrain X to be within the wall
+                    if ground_pos.x > progress.wall_x {
+                        ground_pos.x = progress.wall_x;
+                    }
+
+                    // Constrain Z to be within lane
+                    ground_pos.z = ground_pos.z.clamp(-PLAYER_BOUNDARY_Z, PLAYER_BOUNDARY_Z);
+
+                    hover_pos.world = ground_pos;
+
+                    // Always update indicator to hover position
+                    for mut indicator_transform in indicator_query.iter_mut() {
+                        indicator_transform.translation = ground_pos + Vec3::Y * 0.1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn player_aiming(
+    hover_pos: Res<HoverPosition>,
+    mut player_query: Query<&mut Transform, With<Player>>,
+) {
+    for mut transform in &mut player_query {
+        let mut look_dir = hover_pos.world - transform.translation;
+        look_dir.y = 0.0;
+        if look_dir.length_squared() > 0.01 {
+            transform.look_to(look_dir.normalize(), Vec3::Y);
         }
     }
 }
@@ -864,38 +916,38 @@ fn handle_input(
     mouse_button_input: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     window_query: Query<&Window>,
-    camera_query: Query<(&Camera, &GlobalTransform)>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut player_query: Query<(&mut TargetPosition, &Transform), With<Player>>,
-    mut indicator_query: Query<&mut Transform, (With<ClickIndicator>, Without<Player>)>,
     progress: Res<Progress>,
     mut hover_pos: ResMut<HoverPosition>,
 ) {
     let window = window_query.single();
-    if let Ok((camera, camera_transform)) = camera_query.get_single() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                let t = -ray.origin.y / ray.direction.y;
-                if t > 0.0 {
-                    let mut ground_pos = ray.origin + ray.direction * t;
-                    
-                    // Constrain X to be within the wall
-                    if ground_pos.x > progress.wall_x {
-                        ground_pos.x = progress.wall_x;
-                    }
+    
+    // Cache cursor position
+    if let Some(cursor_position) = window.cursor_position() {
+        hover_pos.cursor = Some(cursor_position);
+    }
 
-                    // Constrain Z to be within lane
-                    ground_pos.z = ground_pos.z.clamp(-PLAYER_BOUNDARY_Z, PLAYER_BOUNDARY_Z);
+    let mut mouse_active = false;
+    
+    // Right Click Movement
+    if mouse_button_input.pressed(MouseButton::Right) {
+        if let Some(cursor) = hover_pos.cursor {
+            if let Ok((camera, camera_transform)) = camera_query.get_single() {
+                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) {
+                    let t = -ray.origin.y / ray.direction.y;
+                    if t > 0.0 {
+                        let mut ground_pos = ray.origin + ray.direction * t;
+                        
+                        // Constrain X to be within the wall
+                        if ground_pos.x > progress.wall_x {
+                            ground_pos.x = progress.wall_x;
+                        }
 
-                    // Update hover position resource
-                    hover_pos.0 = ground_pos;
+                        // Constrain Z to be within lane
+                        ground_pos.z = ground_pos.z.clamp(-PLAYER_BOUNDARY_Z, PLAYER_BOUNDARY_Z);
 
-                    // Always update indicator to hover position
-                    for mut indicator_transform in indicator_query.iter_mut() {
-                        indicator_transform.translation = ground_pos + Vec3::Y * 0.1;
-                    }
-
-                    // Only update target on click
-                    if mouse_button_input.just_pressed(MouseButton::Right) {
+                        mouse_active = true;
                         for (mut target_pos, _) in player_query.iter_mut() {
                             target_pos.0 = ground_pos;
                         }
@@ -905,25 +957,27 @@ fn handle_input(
         }
     }
 
-    // Keyboard movement
-    let mut keyboard_dir = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        keyboard_dir.x -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        keyboard_dir.x += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        keyboard_dir.z += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        keyboard_dir.z -= 1.0;
-    }
+    // Keyboard movement - only if mouse is not actively setting a target
+    if !mouse_active {
+        let mut keyboard_dir = Vec3::ZERO;
+        if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+            keyboard_dir.x -= 1.0;
+        }
+        if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+            keyboard_dir.x += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+            keyboard_dir.z += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+            keyboard_dir.z -= 1.0;
+        }
 
-    if keyboard_dir != Vec3::ZERO {
-        let keyboard_dir = keyboard_dir.normalize();
-        for (mut target_pos, transform) in player_query.iter_mut() {
-            target_pos.0 = transform.translation + keyboard_dir * 1.5;
+        if keyboard_dir != Vec3::ZERO {
+            let keyboard_dir = keyboard_dir.normalize();
+            for (mut target_pos, transform) in player_query.iter_mut() {
+                target_pos.0 = transform.translation + keyboard_dir * 1.5;
+            }
         }
     }
 }
@@ -932,7 +986,6 @@ fn move_player(
     time: Res<Time>,
     mut query: Query<(&mut Transform, &TargetPosition), With<Player>>,
     mut progress: ResMut<Progress>,
-    hover_pos: Res<HoverPosition>,
 ) {
     for (mut transform, target) in query.iter_mut() {
         let direction = target.0 - transform.translation;
@@ -961,13 +1014,6 @@ fn move_player(
         if transform.translation.x < progress.min_x {
             progress.min_x = transform.translation.x;
             progress.wall_x = progress.min_x + 15.0; // The "old platform" is left behind
-        }
-
-        // Face the hover position (aiming)
-        let mut look_dir = hover_pos.0 - transform.translation;
-        look_dir.y = 0.0;
-        if look_dir.length_squared() > 0.01 {
-            transform.look_to(look_dir.normalize(), Vec3::Y);
         }
     }
 }
