@@ -8,6 +8,8 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "League WASM Game".into(),
+                fit_canvas_to_parent: true,
+                canvas: Some("#bevy".to_string()),
                 ..default()
             }),
             ..default()

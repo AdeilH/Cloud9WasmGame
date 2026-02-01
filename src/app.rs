@@ -362,6 +362,8 @@ fn setup_game(
         parent.spawn((
             SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(player_choice.character_path.clone()))),
             Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+            Visibility::default(),
+            InheritedVisibility::default(),
         ));
 
         // Health bar background
@@ -551,6 +553,8 @@ fn spawn_enemies(
                 parent.spawn((
                     SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(model_path))),
                     Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+                    Visibility::default(),
+                    InheritedVisibility::default(),
                 ));
 
                 // Health bar background
