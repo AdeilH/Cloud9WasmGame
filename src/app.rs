@@ -8,10 +8,22 @@ pub const PLAYER_BOUNDARY_Z: f32 = 7.0;
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum GameState {
     #[default]
+    Loading,
     Menu,
     Playing,
     GameOver,
     Victory,
+}
+
+#[derive(Component)]
+pub struct LoadingUI;
+
+#[derive(Component)]
+pub struct LoadingProgressBar;
+
+#[derive(Resource, Default)]
+pub struct LoadingAssets {
+    pub handles: Vec<UntypedHandle>,
 }
 
 #[derive(Resource)]
@@ -120,7 +132,11 @@ impl Plugin for GamePlugin {
             .init_resource::<Progress>()
             .init_resource::<HoverPosition>()
             .init_resource::<Score>()
+            .init_resource::<LoadingAssets>()
             .insert_resource(PlayerLives(3))
+            .add_systems(OnEnter(GameState::Loading), setup_loading)
+            .add_systems(Update, check_loading.run_if(in_state(GameState::Loading)))
+            .add_systems(OnExit(GameState::Loading), cleanup_loading)
             .add_systems(OnEnter(GameState::Menu), setup_menu)
             .add_systems(Update, menu_interaction.run_if(in_state(GameState::Menu).or(in_state(GameState::GameOver)).or(in_state(GameState::Victory))))
             .add_systems(OnExit(GameState::Menu), cleanup_menu)
@@ -146,6 +162,128 @@ impl Plugin for GamePlugin {
             .add_systems(OnExit(GameState::GameOver), cleanup_menu)
             .add_systems(OnEnter(GameState::Victory), setup_victory)
             .add_systems(OnExit(GameState::Victory), cleanup_menu);
+    }
+}
+
+fn setup_loading(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn((
+        Camera2d::default(),
+        LoadingUI,
+    ));
+
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            flex_direction: FlexDirection::Column,
+            ..default()
+        },
+        BackgroundColor(Color::BLACK),
+        LoadingUI,
+    )).with_children(|parent| {
+        parent.spawn((
+            Text::new("LOADING ASSETS..."),
+            TextFont::from_font_size(40.0),
+            TextColor(Color::WHITE),
+        ));
+
+        // Progress bar container
+        parent.spawn((
+            Node {
+                width: Val::Px(400.0),
+                height: Val::Px(20.0),
+                margin: UiRect::all(Val::Px(20.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(Color::WHITE),
+        )).with_children(|bar_bg| {
+            bar_bg.spawn((
+                Node {
+                    width: Val::Percent(0.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.0, 1.0, 0.0)),
+                LoadingProgressBar,
+            ));
+        });
+    });
+
+    // Start loading all required assets to cache them
+    let mut handles = Vec::new();
+
+    // Characters
+    handles.push(asset_server.load_untyped("Models/GLB_format/character-a.glb").into());
+    handles.push(asset_server.load_untyped("Models/GLB_format/character-b.glb").into());
+
+    // Previews
+    handles.push(asset_server.load_untyped("Previews/character-a.png").into());
+    handles.push(asset_server.load_untyped("Previews/character-b.png").into());
+
+    // Buildings
+    for path in [
+        "Models/GLB_format/building-i.glb",
+        "Models/GLB_format/building-p.glb",
+        "Models/GLB_format/building-j.glb",
+        "Models/GLB_format/building-s.glb",
+    ] {
+        handles.push(asset_server.load_untyped(path).into());
+    }
+
+    // Enemies
+    for path in [
+        "Models/GLB_format/character-p.glb",
+        "Models/GLB_format/character-q.glb",
+        "Models/GLB_format/character-n.glb",
+        "Models/GLB_format/character-m.glb",
+    ] {
+        handles.push(asset_server.load_untyped(path).into());
+    }
+
+    // Terrain
+    handles.push(asset_server.load_untyped("PNG/Default/terrain_sand_top_a.png").into());
+
+    commands.insert_resource(LoadingAssets { handles });
+}
+
+fn check_loading(
+    mut next_state: ResMut<NextState<GameState>>,
+    loading_assets: Res<LoadingAssets>,
+    asset_server: Res<AssetServer>,
+    mut progress_bar_query: Query<&mut Node, With<LoadingProgressBar>>,
+) {
+    use bevy::asset::LoadState;
+    
+    let mut loaded_count = 0;
+    for handle in &loading_assets.handles {
+        match asset_server.get_load_state(handle.id()) {
+            Some(LoadState::Loaded) => loaded_count += 1,
+            Some(LoadState::Failed(_)) => loaded_count += 1, // Skip failed for now to avoid hang
+            _ => {}
+        }
+    }
+
+    let progress = if loading_assets.handles.is_empty() {
+        1.0
+    } else {
+        loaded_count as f32 / loading_assets.handles.len() as f32
+    };
+
+    for mut node in &mut progress_bar_query {
+        node.width = Val::Percent(progress * 100.0);
+    }
+
+    if loaded_count == loading_assets.handles.len() {
+        next_state.set(GameState::Menu);
+    }
+}
+
+fn cleanup_loading(mut commands: Commands, query: Query<Entity, With<LoadingUI>>) {
+    for entity in &query {
+        commands.entity(entity).despawn_recursive();
     }
 }
 
@@ -331,8 +469,10 @@ fn setup_game(
     // Light
     commands.spawn((
         DirectionalLight {
-            illuminance: 10000.0,
+            illuminance: 12000.0,
             shadows_enabled: true,
+            shadow_depth_bias: 0.1,
+            shadow_normal_bias: 0.2,
             ..default()
         },
         Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4)),
@@ -341,7 +481,7 @@ fn setup_game(
     // Ambient Light
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
-        brightness: 400.0,
+        brightness: 800.0,
     });
 
     // Character
@@ -362,7 +502,7 @@ fn setup_game(
         parent.spawn((
             SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(player_choice.character_path.clone()))),
             Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
-            Visibility::default(),
+            Visibility::Visible,
             InheritedVisibility::default(),
         ));
 
@@ -375,6 +515,8 @@ fn setup_game(
                 ..default()
             })),
             Transform::from_xyz(0.0, 3.5, 0.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+            Visibility::Visible,
+            InheritedVisibility::default(),
         ));
         // Health bar foreground
         parent.spawn((
@@ -388,6 +530,8 @@ fn setup_game(
             Transform::from_xyz(0.0, 3.51, 0.0)
                 .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
                 .with_scale(Vec3::new(2.0, 1.0, 0.2)),
+            Visibility::Visible,
+            InheritedVisibility::default(),
         ));
     });
 
@@ -418,6 +562,8 @@ fn setup_game(
             reflectance: 0.0,
             ..default()
         })),
+        Visibility::Visible,
+        InheritedVisibility::default(),
     ));
 
     // Click Indicator (Small dot)
@@ -430,6 +576,8 @@ fn setup_game(
             ..default()
         })),
         Transform::from_xyz(0.0, -1.0, 0.0),
+        Visibility::Visible,
+        InheritedVisibility::default(),
     ));
 
     // Spawn Buildings in a left-diagonal lane layout (x axis)
@@ -503,12 +651,16 @@ fn spawn_tree(
         Mesh3d(trunk_mesh),
         MeshMaterial3d(trunk_mat),
         Transform::from_translation(pos + Vec3::Y * 0.5),
+        Visibility::Visible,
+        InheritedVisibility::default(),
     ));
     commands.spawn((
         Prop,
         Mesh3d(leaves_mesh),
         MeshMaterial3d(leaves_mat),
         Transform::from_translation(pos + Vec3::Y * 2.0),
+        Visibility::Visible,
+        InheritedVisibility::default(),
     ));
 }
 
@@ -553,7 +705,7 @@ fn spawn_enemies(
                 parent.spawn((
                     SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(model_path))),
                     Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
-                    Visibility::default(),
+                    Visibility::Visible,
                     InheritedVisibility::default(),
                 ));
 
@@ -566,6 +718,8 @@ fn spawn_enemies(
                         ..default()
                     })),
                     Transform::from_xyz(0.0, 3.5, 0.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                    Visibility::Visible,
+                    InheritedVisibility::default(),
                 ));
                 // Health bar foreground
                 parent.spawn((
@@ -579,6 +733,8 @@ fn spawn_enemies(
                     Transform::from_xyz(0.0, 3.51, 0.0)
                         .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
                         .with_scale(Vec3::new(2.0, 1.0, 0.2)),
+                    Visibility::Visible,
+                    InheritedVisibility::default(),
                 ));
             });
         }
@@ -656,6 +812,8 @@ fn combat_system(
                 MeshMaterial3d(player_projectile_mat.clone()),
                 Transform::from_translation(player_transform.translation + Vec3::Y * 1.5)
                     .looking_to(dir, Vec3::Y),
+                Visibility::Visible,
+                InheritedVisibility::default(),
             ));
             
             player_timer.0.reset();
@@ -679,6 +837,8 @@ fn combat_system(
                         MeshMaterial3d(enemy_projectile_mat.clone()),
                         Transform::from_translation(enemy_transform.translation + Vec3::Y * 1.5)
                             .looking_to(dir, Vec3::Y),
+                        Visibility::Visible,
+                        InheritedVisibility::default(),
                     ));
                     enemy_timer.0.reset();
                 }
