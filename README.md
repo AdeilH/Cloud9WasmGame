@@ -16,6 +16,9 @@ A top-down survival game built with **Bevy 0.15**, targeting **WebAssembly (WASM
 - **Optimization**: [wasm-opt](https://github.com/WebAssembly/binaryen)
 - **Deployment**: Docker & Nginx
 
+## 🎨 Credits
+- **Assets**: 3D models and textures by [Kenney](https://kenney.nl/assets).
+
 ## 🏃 How to Run Locally
 
 ### Prerequisites
